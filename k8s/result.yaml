@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: result-writer
+spec:
+  containers:
+    - name: result-writer
+      image: fissure/py:latest
+      imagePullPolicy: Always
+      command:
+        [
+          "mantis",
+          "result-writer",
+          "--redis-ip",
+          "redis-service",
+          "--redis-port",
+          "7000",
+        ]
+      resources:
+        requests:
+          cpu: 0.5
+          memory: 0.5Gi
+        limits:
+          cpu: 1
+          memory: 0.5Gi

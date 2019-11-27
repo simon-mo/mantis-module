@@ -1,0 +1,34 @@
+version: "3"
+services:
+  redis:
+    image: mantis/redis:latest
+  
+  worker:
+    image: mantis/py:latest
+    command: mantis consume --redis-ip redis --redis-port 7000
+    depends_on:
+      - redis
+  
+  worker-frac:
+    image: mantis/py:latest
+    command: mantis consume --redis-ip redis --redis-port 7000 --is-fractional --fractional-sleep 0.02
+    depends_on:
+      - redis
+  
+  load-gen:
+    image: mantis/py:latest
+    command: mantis load-gen --redis-ip redis --redis-port 7000 --load ./debug.npy
+    depends_on:
+      - redis
+
+  metric-monitor:
+    image: mantis/py:latest
+    command: mantis metric-monitor --redis-ip redis --redis-port 7000
+    depends_on:
+      - redis
+
+  result-writer:
+    image: mantis/py:latest
+    command: mantis result-writer --redis-ip redis --redis-port 7000
+    depends_on:
+      - redis

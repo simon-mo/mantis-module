@@ -1,0 +1,13 @@
+# Create it using eksctl create cluster --write-kubeconfile=false -f dev.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: mantis-dev
+  region: us-west-2
+
+managedNodeGroups:
+  - name: managed-nodes
+    desiredCapacity: 3
+    instanceType: t2.2xlarge
