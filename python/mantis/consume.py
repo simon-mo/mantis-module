@@ -100,4 +100,3 @@ def consume(redis_ip, redis_port, is_fractional, fractional_sleep):
             next_query = None
     except KeyboardInterrupt:
         signal_handler()
-

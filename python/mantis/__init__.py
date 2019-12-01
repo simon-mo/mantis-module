@@ -17,4 +17,3 @@ cli.add_command(result_writer)
 
 def wrapper():
     cli(standalone_mode=False)
-
