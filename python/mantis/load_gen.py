@@ -1,18 +1,13 @@
 import json
-import os
-import random
-import signal
-import sys
 import time
-import uuid
 
 import click
 import numpy as np
 import redis
-import tqdm
+from structlog import get_logger
 
 PAYLOAD = b"1" * 100
-RESULT_KEY = "completion_queue"
+logger = get_logger()
 
 
 @click.command()
@@ -27,11 +22,15 @@ def load_gen(load, redis_ip, redis_port):
         json.loads(r.execute_command("mantis.status"))["queues"]
     )
     while get_num_workers() == 0:
-        print("Zero worker available, waiting...")
+        logger.msg("Zero worker available, waiting...")
         time.sleep(1)
 
-    for i, delta in tqdm.tqdm(enumerate(deltas)):
+    total_load = len(deltas)
+    log_every = total_load // 100
+    for i, delta in enumerate(deltas):
+        if i % log_every == 0:
+            logger.msg(f"Sent {i} queries", percent=i / total_load)
         r.execute_command("mantis.enqueue", PAYLOAD, time.time(), i)
         time.sleep(delta / 1000)
 
-    print("Load generation finished!")
+    logger.msg("Load generation finished!")

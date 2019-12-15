@@ -1,4 +1,6 @@
 click
+structlog
 numpy
 redis
 tqdm
+colorama

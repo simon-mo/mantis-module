@@ -1,5 +1,4 @@
 import json
-import os
 import random
 import signal
 import sys
@@ -7,13 +6,12 @@ import time
 import uuid
 
 import click
-import numpy as np
 import redis
-import tqdm
-from mantis.utils import LogEvery
+from structlog import get_logger
+
+logger = get_logger()
 
 
-PAYLOAD = b"1" * 100
 RESULT_KEY = "completion_queue"
 
 
@@ -37,47 +35,59 @@ def consume(redis_ip, redis_port, is_fractional, fractional_sleep):
     r = redis.Redis(redis_ip, port=redis_port, decode_responses=True)
     queue_name = uuid.uuid4().hex
     worker = Worker()
-    logger = LogEvery(50)
 
     r.execute_command("mantis.add_queue", queue_name)
 
+    counter = 0
+    log_every = 10
+    next_query = None
+    fractional_prob = 0.0
+    last_print = time.time()
+
     def work_on_single_query(next_query):
-        logger.log("Processing queries...")
+        nonlocal counter
+        counter += 1
+        if counter % log_every == 0:
+            logger.msg(
+                f"Work on query {counter}",
+                is_fractional=is_fractional,
+                fractional_prob=fractional_prob,
+                counter=counter,
+                queue_name=queue_name,
+            )
         query = json.loads(next_query)
         query["_3_dequeue_time"] = time.time()
         worker(query.pop("payload"))
         r.execute_command("mantis.complete", json.dumps(query))
 
-    next_query = None
-    fractional_prob = 0.0
-
-    last_print = time.time()
-
     def signal_handler(*args):
         nonlocal next_query
-        print("SIGINT received Draining the queue...")
+        logger.msg("SIGINT received Draining the queue...")
         r.execute_command("mantis.drop_queue", queue_name)
 
-        print("Currently processing query is ", next_query)
+        logger.msg("Currently processing query is ", next_query)
         if next_query:
             work_on_single_query(next_query)
 
         items_left = r.llen(queue_name)
-        print("{} item left, processing...".format(items_left))
+        logger.msg("{} item left, processing...".format(items_left))
         for _ in range(items_left):
             next_query = r.lpop(queue_name)
             work_on_single_query(next_query)
-        print("All done!")
+        logger.msg("All done!")
         sys.exit(0)
 
+    # Handle SIGTERM
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         while True:
             if is_fractional:
+                # Print out updated fractional value
                 if time.time() - last_print > 10:
-                    print("current fractional prob is", fractional_prob)
+                    logger.msg(f"current fractional prob is {fractional_prob}")
                     last_print = time.time()
+                # Check every time because fractional prob may be updated
                 new_fractional_prob = r.get("fractional_prob")
                 fractional_prob = (
                     float(new_fractional_prob)
@@ -91,12 +101,13 @@ def consume(redis_ip, redis_port, is_fractional, fractional_sleep):
 
             next_query = r.blpop(queue_name, timeout=1)
             if next_query is None:
-                print("Timeout, retrying...")
+                logger.msg("Timeout, retrying...")
                 continue
 
             # if not None, next_query is format (key, value)
             _, next_query = next_query
             work_on_single_query(next_query)
             next_query = None
+    # Handle SIGINT
     except KeyboardInterrupt:
         signal_handler()

@@ -96,7 +96,7 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
   if (argc != 4) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
-  LOG_EVERY_N(INFO, 1000) << "Enqueuing queries...";
+  LOG_FIRST_N(INFO,1) << "First ENQUEUE";
 
   // BEGIN: choose a queue
   std::vector<std::string> queues = get_active_queues(ctx);
@@ -168,6 +168,8 @@ int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int 
   if (argc != 2) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
+  LOG_FIRST_N(INFO,1) << "First ADD_QUEUE";
+
   // Note that queue name will be client generated.
   // We assume the client has already called "subscribe" to that queue.
   RedisModuleString *queue_name = argv[1];
@@ -183,6 +185,8 @@ int MantisCommand(DROP_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int
   if (argc != 2) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
+  LOG_FIRST_N(INFO,1) << "First DROP_ENQUEUE";
+
   RedisModuleString *queue_name = argv[1];
   RedisModule_Call(ctx, "SADD", "cs", REMOVED_QUEUES.data(), queue_name);
   RedisModule_Call(ctx, "SREM", "cs", ACTIVE_QUEUES.data(), queue_name);
@@ -197,6 +201,7 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   REDISMODULE_NOT_USED(argv);
 
   RedisModule_AutoMemory(ctx);
+  LOG_FIRST_N(INFO,1) << "First STATUS";
 
   // Get timestamps in ns
   std::vector<long long> timestamps_ns;
@@ -227,6 +232,7 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   // End get fractional_value
 
   // Get queue sizes
+  // The total queue sizes are active + dropped queue sizes.
   std::vector<long long> queue_sizes;
   std::vector<std::string> queues = get_active_queues(ctx);
   for (auto &queue_name : queues) {
@@ -239,26 +245,48 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
     dropped_queue_sizes.push_back(get_queue_length(ctx, queue_name));
   }
 
+  // Sum active queue size and dropped queue size
   long long total_queue_size = std::accumulate(queue_sizes.begin(), queue_sizes.end(), 0);
   total_queue_size +=
       std::accumulate(dropped_queue_sizes.begin(), dropped_queue_sizes.end(), 0);
+  // End get queue sizes
 
   size_t active_replicas = queues.size();
+  size_t dropped_replicas = dropped_queues.size();
   long long current_time = get_current_time_ns();
 
   nlohmann::json status_report;
+
+  // Real deltas from last call. List[int]
   status_report["real_ts_ns"] = timestamps_ns;
 
+  // List[UUID] 
   status_report["queues"] = queues;
+  status_report["dropped_queues"] = dropped_queues;
+
+  // Active queue sizes ActiveList[int]
   status_report["queue_sizes"] = queue_sizes;
 
-  status_report["dropped_queues"] = dropped_queues;
+  // Dropped queue sizes DropList[int] (Scaling down)
   status_report["dropped_queue_sizes"] = dropped_queue_sizes;
 
+  // -------- Inferred ----------
+  // Sum(ActiveList[int], DropList[int])
   status_report["total_queue_size"] = total_queue_size;
+
+  // Int 
   status_report["num_active_replica"] = active_replicas;
+  // Int
+  status_report["num_dropped_replica"] = dropped_replicas;
+  // Int = Int + Int
+  status_report["num_total_replica"] = active_replicas+dropped_replicas;
+
+  // -------------------------------------
   status_report["current_time_ns"] = current_time;
+
+  // Float, configurable
   status_report["fractional_value"] = fractional_val;
+
   std::string report_string = status_report.dump();
 
   RedisModule_ReplyWithStringBuffer(ctx, report_string.c_str(), report_string.size());
@@ -272,6 +300,8 @@ int MantisCommand(COMPLETE)(RedisModuleCtx *ctx, RedisModuleString **argv, int a
   if (argc != 2) return RedisModule_WrongArity(ctx);
 
   RedisModule_AutoMemory(ctx);
+
+  LOG_FIRST_N(INFO,1) << "First COMPLETE";
 
   RedisModuleString *payload_str = argv[1];
   size_t payload_len;
