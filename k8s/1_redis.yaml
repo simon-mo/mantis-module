@@ -28,14 +28,8 @@ metadata:
   labels:
     app: redis
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
     - port: 7000 # Port to expose internally in cluster
-      # For k3s deployment, the node port is exposed using docker
-      # which maps back to 7000 using command
-      # k3d create --publish 8082:32700@k3d-k3s-default-worker-0 --workers 1
-      nodePort: 32700 # Port to expose outside k8s cluster
-      targetPort: 7000 # Port that containers listen on
-      protocol: TCP
   selector:
     app: redis

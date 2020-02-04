@@ -12,6 +12,7 @@ spec:
       labels:
         app: worker
     spec:
+      terminationGracePeriodSeconds: 3600 # An hour
       containers:
         - name: worker
           image: fissure/py:latest
@@ -32,3 +33,33 @@ spec:
             limits:
               cpu: 2000m
               memory: 0.5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mantis-frac-worker
+  labels:
+    name: mantis-frac-worker
+spec:
+  containers:
+    - name: mantis-frac-worker
+      image: fissure/py:latest
+      command:
+        [
+          "mantis",
+          "consume",
+          "--redis-ip",
+          "redis-service",
+          "--redis-port",
+          "7000",
+          "--is-fractional",
+          "--fractional-sleep",
+          "0.02",
+        ]
+      resources:
+        requests:
+          cpu: 500m
+          memory: 0.5Gi
+        limits:
+          cpu: 2000m
+          memory: 0.5Gi
