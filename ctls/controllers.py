@@ -47,7 +47,7 @@ class PID:
         # Compute delta hat
         sigma_hat = mean_arrival_rate / mean_service_rate
         # Target changes
-        e_t = self.target_sigma - sigma_hat
+        e_t = sigma_hat - self.target_sigma
         # Num replica for changes
         action = self.k_p * e_t
 
