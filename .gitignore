@@ -4,3 +4,4 @@
 *.xo
 .DS_STORE
 .vscode
+*.egg-info

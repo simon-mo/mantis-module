@@ -1,4 +1,4 @@
-# Create it using eksctl create cluster --write-kubeconfile=false -f dev.yaml
+# Create it using "eksctl create cluster -f dev.yaml"
 
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig

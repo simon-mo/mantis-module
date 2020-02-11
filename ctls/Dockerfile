@@ -17,5 +17,6 @@ RUN pip install -r requirements.txt
 
 # Install the mantis python package
 COPY . .
+RUN pip install -e .
 
-CMD ["python", "bangbang.py"]
+CMD ["python", "mantis_ctl/runner.py"]
