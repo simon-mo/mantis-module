@@ -8,33 +8,50 @@ import uuid
 import click
 import redis
 from structlog import get_logger
+from mantis.models import catalogs
 
 logger = get_logger()
 
 
 RESULT_KEY = "completion_queue"
 
+FRACTIONAL_SLEEP = 0.0
+FRACTIONAL_PROB = 0.0
 
-class Worker:
-    def __init__(self):
-        pass
+class FractionalValueMonitor(threading.Thread):
+    def __init__(self, redis_ip, redis_port):
+        self.r = redis.Redis(redis_ip, port=redis_port, decode_responses=True)
 
-    def __call__(self, *args):
-        time.sleep(0.02)
+    def run(self):
+        if time.time() - last_print > 10:
+            logger.msg(f"current fractional prob is {fractional_prob}")
+            last_print = time.time()
+        # Check every time because fractional prob may be updated
+        new_fractional_prob = r.get("fractional_prob")
+        fractional_prob = (
+            float(new_fractional_prob)
+            if new_fractional_prob is not None
+            else 0.0
+        )
+
+        if random.random() <= fractional_prob:
+            time.sleep(fractional_sleep)
+            continue
 
 
 @click.command()
 @click.option("--redis-ip", default="0.0.0.0")
 @click.option("--redis-port", required=True, default=7000, type=int)
 @click.option("--is-fractional", is_flag=True)
-@click.option("--fractional-sleep", type=float)
-def consume(redis_ip, redis_port, is_fractional, fractional_sleep):
+@click.option("--workload", required=True, type=click.Choice(list(catalogs.keys())))
+def consume(redis_ip, redis_port, is_fractional, workload):
     if is_fractional:
         assert fractional_sleep is not None
 
     r = redis.Redis(redis_ip, port=redis_port, decode_responses=True)
     queue_name = uuid.uuid4().hex
-    worker = Worker()
+
+    worker = catalogs[workload]()
 
     r.execute_command("mantis.add_queue", queue_name)
 
@@ -83,21 +100,7 @@ def consume(redis_ip, redis_port, is_fractional, fractional_sleep):
     try:
         while True:
             if is_fractional:
-                # Print out updated fractional value
-                if time.time() - last_print > 10:
-                    logger.msg(f"current fractional prob is {fractional_prob}")
-                    last_print = time.time()
-                # Check every time because fractional prob may be updated
-                new_fractional_prob = r.get("fractional_prob")
-                fractional_prob = (
-                    float(new_fractional_prob)
-                    if new_fractional_prob is not None
-                    else 0.0
-                )
 
-                if random.random() <= fractional_prob:
-                    time.sleep(fractional_sleep)
-                    continue
 
             next_query = r.blpop(queue_name, timeout=1)
             if next_query is None:

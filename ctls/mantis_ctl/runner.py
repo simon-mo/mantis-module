@@ -17,6 +17,8 @@ if __name__ == "__main__":
     r = redis.Redis("redis-service", port=7000, decode_responses=True)
     conn = MetricConnection("/tmp/metric.db")
 
+    r.set("fractional_sleep", str(0.02))
+
     def scale(new_reps):
         # Set integer component
         new_reps = max(new_reps, 1)
@@ -35,7 +37,7 @@ if __name__ == "__main__":
         assert exit_code == 0
 
         # Set fracitonal component
-        r.set("fractional_prob", str(new_reps % 1.0))
+        r.rpsuh("fractional_prob", str(new_reps % 1.0))
         logger.msg("Setting ", fractional_value=str(new_reps % 1.0))
 
     while True:
