@@ -7,3 +7,4 @@ colorama
 torch
 torchvision
 transformers
+pykube-ng

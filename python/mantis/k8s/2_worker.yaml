@@ -17,14 +17,11 @@ spec:
         - name: worker
           image: fissure/py:latest
           imagePullPolicy: Always
+          # ENV to be filled.
           command:
             [
               "mantis",
               "consume",
-              "--redis-ip",
-              "redis-service",
-              "--redis-port",
-              "7000",
             ]
           resources:
             requests:
@@ -44,17 +41,13 @@ spec:
   containers:
     - name: mantis-frac-worker
       image: fissure/py:latest
+      imagePullPolicy: Always
+      # ENV to be filled.
       command:
         [
           "mantis",
           "consume",
-          "--redis-ip",
-          "redis-service",
-          "--redis-port",
-          "7000",
           "--is-fractional",
-          "--fractional-sleep",
-          "0.02",
         ]
       resources:
         requests:

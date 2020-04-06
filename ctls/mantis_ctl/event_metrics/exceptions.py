@@ -1,2 +1,0 @@
-class MetricNotFound(Exception):
-    pass

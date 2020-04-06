@@ -1,5 +1,0 @@
-click
-numpy
-redis
-structlog
-

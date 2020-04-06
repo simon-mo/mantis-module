@@ -5,3 +5,4 @@
 .DS_STORE
 .vscode
 *.egg-info
+.pytest_cache/

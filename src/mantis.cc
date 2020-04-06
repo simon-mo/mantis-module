@@ -1,13 +1,13 @@
-#include "glog/logging.h"
-#include "json.hpp"
-#include "redismodule.h"
-
 #include <chrono>
 #include <iostream>
 #include <iterator>
 #include <numeric>
 #include <random>
 #include <string_view>
+
+#include "glog/logging.h"
+#include "json.hpp"
+#include "redismodule.h"
 
 #define CAT_I(a, b) a##b
 #define STRCAT(a, b) CAT_I(a, b)
@@ -43,6 +43,7 @@ inline long long get_current_time_ns() {
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
+
 inline long long get_queue_length(RedisModuleCtx *ctx, std::string queue_name) {
   RedisModuleCallReply *reply;
   reply = RedisModule_Call(ctx, "LLEN", "c", queue_name.c_str());
@@ -96,7 +97,7 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
   if (argc != 4) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
-  LOG_FIRST_N(INFO,1) << "First ENQUEUE";
+  LOG_EVERY_N(INFO, 100) << "Handling enqueue # " << google::COUNTER;
 
   // BEGIN: choose a queue
   std::vector<std::string> queues = get_active_queues(ctx);
@@ -105,7 +106,6 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
   CHECK(queues.size() > 0) << "No queue available";
   if (queues.size() == 1) {
     chosen_queue_name = queues[0];
-    // LOG(INFO) << "Only one queue avaiable, used " << chosen_queue_name;
   } else {
     std::vector<std::string> two_chosen_queues;
     std::sample(queues.begin(), queues.end(), std::back_inserter(two_chosen_queues), 2,
@@ -115,15 +115,6 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
     long long second_queue_len = get_queue_length(ctx, two_chosen_queues[1]);
     chosen_queue_name =
         first_queue_len < second_queue_len ? two_chosen_queues[0] : two_chosen_queues[1];
-
-    // #ifdef MANTIS_DEBUG
-    //     nlohmann::json tmp;
-    //     tmp["all_queues"] = queues;
-    //     tmp["two_queues"] = two_chosen_queues;
-    //     tmp["two_queues_length"] = std::vector<long long>{first_queue_len,
-    //     second_queue_len}; tmp["chosen_queue"] = chosen_queue_name; LOG(INFO) <<
-    //     tmp.dump();
-    // #endif
   }
   // END: choose a queue
 
@@ -168,7 +159,9 @@ int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int 
   if (argc != 2) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
-  LOG_FIRST_N(INFO,1) << "First ADD_QUEUE";
+  size_t queue_name_len;
+  std::string queue_name_s = RedisModule_StringPtrLen(argv[1], &queue_name_len);
+  LOG(INFO) << "Handling add_queue " << queue_name_s;
 
   // Note that queue name will be client generated.
   // We assume the client has already called "subscribe" to that queue.
@@ -185,7 +178,9 @@ int MantisCommand(DROP_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int
   if (argc != 2) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
-  LOG_FIRST_N(INFO,1) << "First DROP_ENQUEUE";
+  size_t queue_name_len;
+  std::string queue_name_s = RedisModule_StringPtrLen(argv[1], &queue_name_len);
+  LOG(INFO) << "Handling drop_queue " << queue_name_s;
 
   RedisModuleString *queue_name = argv[1];
   RedisModule_Call(ctx, "SADD", "cs", REMOVED_QUEUES.data(), queue_name);
@@ -201,7 +196,6 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   REDISMODULE_NOT_USED(argv);
 
   RedisModule_AutoMemory(ctx);
-  LOG_FIRST_N(INFO,1) << "First STATUS";
 
   // Get timestamps in ns
   std::vector<long long> timestamps_ns;
@@ -260,7 +254,7 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   // Real deltas from last call. List[int]
   status_report["real_ts_ns"] = timestamps_ns;
 
-  // List[UUID] 
+  // List[UUID]
   status_report["queues"] = queues;
   status_report["dropped_queues"] = dropped_queues;
 
@@ -274,12 +268,12 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   // Sum(ActiveList[int], DropList[int])
   status_report["total_queue_size"] = total_queue_size;
 
-  // Int 
+  // Int
   status_report["num_active_replica"] = active_replicas;
   // Int
   status_report["num_dropped_replica"] = dropped_replicas;
   // Int = Int + Int
-  status_report["num_total_replica"] = active_replicas+dropped_replicas;
+  status_report["num_total_replica"] = active_replicas + dropped_replicas;
 
   // -------------------------------------
   status_report["current_time_ns"] = current_time;
@@ -300,8 +294,6 @@ int MantisCommand(COMPLETE)(RedisModuleCtx *ctx, RedisModuleString **argv, int a
   if (argc != 2) return RedisModule_WrongArity(ctx);
 
   RedisModule_AutoMemory(ctx);
-
-  LOG_FIRST_N(INFO,1) << "First COMPLETE";
 
   RedisModuleString *payload_str = argv[1];
   size_t payload_len;

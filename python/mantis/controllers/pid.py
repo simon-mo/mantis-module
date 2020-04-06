@@ -1,21 +1,9 @@
-from typing import List
-
 import numpy as np
 
-
-class Controller:
-    def get_action_from_state(
-        self,
-        # List[float] in ms
-        e2e_latency_since_last_call: List[float],
-        interarrival_deltas_ms_since_last_call,  # np.diff(real_ts_ns) / 1e3
-        current_number_of_replicas,  # Only active replicas count
-        queue_length,  # Sum(active replicas queue length)
-    ):
-        pass
+from mantis.controllers.base import BaseController
 
 
-class PID:
+class PIDController(BaseController):
     model_processing_time_s = 0.02
 
     # Sigma is the expected arrival_rate/service_rate
@@ -53,17 +41,7 @@ class PID:
         return action
 
 
-class BangBang:
-    slo = 150  # ms
-    low = 0.5 * slo
-    high = 0.8 * slo
+def test_pid():
+    pid = PID()
 
-    def get_action_from_state(self, lats, deltas, num_replicas, qlen):
-        if len(lats) == 0:
-            return 0
-        p99 = np.percentile(lats, 99)
-        if p99 < self.low:
-            return -0.8
-        if p99 > self.high:
-            return 0.8
-        return 0
+    no_action = pid.get_action_from_state([], [], 0, 0)

@@ -14,12 +14,6 @@ spec:
             [
               "mantis",
               "load-gen",
-              "--redis-ip",
-              "redis-service",
-              "--redis-port",
-              "7000",
-              "--load",
-              "./debug.npy",
             ]
           resources:
             requests:
