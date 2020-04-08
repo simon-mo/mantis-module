@@ -29,6 +29,7 @@ class FractionalValueMonitor(threading.Thread):
         self.r = redis.Redis(redis_ip, port=redis_port, decode_responses=True)
         self.sleep_value = 0.0
         self.prob_value = 0.0
+        super().__init__()
 
     def run(self):
         while not thread_should_stop.is_set():
@@ -74,7 +75,7 @@ class FractionalValueMonitor(threading.Thread):
 @click.option("--custom-args", envvar="MANTIS_CUSTOM_ARGS")
 def consume(redis_ip, redis_port, is_fractional, workload, custom_args):
     init_args = dict()
-    if custom_args is not None:
+    if custom_args:
         for k, v in map(lambda s: s.split("="), custom_args.split(",")):
             init_args[k] = v
         logger.msg(f"Custom arguments are not None. The parsed result is {init_args}")

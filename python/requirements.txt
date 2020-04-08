@@ -4,7 +4,4 @@ numpy
 redis
 tqdm
 colorama
-torch
-torchvision
-transformers
 pykube-ng
