@@ -12,6 +12,7 @@ class Squeezenet:
 
     def __call__(self, payload):
         # 31.4 ms ± 2.55 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+        # 1s / 40ms -> 25 qps, to reach 1000 qps, needs 40 cores
         decoded = base64.b64decode(payload)
         arr = np.frombuffer(decoded, dtype="float32").reshape(*SHAPES)
         with torch.no_grad():

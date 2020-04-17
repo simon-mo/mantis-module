@@ -8,6 +8,6 @@ metadata:
   region: us-west-2
 
 managedNodeGroups:
-  - name: managed-nodes
+  - name: benchmark-nodes
     desiredCapacity: 3
-    instanceType: t2.2xlarge
+    instanceType: m5.8xlarge # 32 cores 128 G

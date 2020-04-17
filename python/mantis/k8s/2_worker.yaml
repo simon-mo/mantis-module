@@ -15,6 +15,10 @@ spec:
       terminationGracePeriodSeconds: 3600 # An hour
       containers:
         - name: worker
+          lifecycle:
+            preStop:
+              exec:
+                command: ["kill", "-s", "HUP", "1"]
           image: fissure/py:latest
           imagePullPolicy: Always
           # ENV to be filled.
@@ -29,7 +33,7 @@ spec:
               memory: 0.5Gi
             limits:
               cpu: 2000m
-              memory: 0.5Gi
+              memory: 2.5Gi
 ---
 apiVersion: v1
 kind: Pod
@@ -55,4 +59,4 @@ spec:
           memory: 0.5Gi
         limits:
           cpu: 2000m
-          memory: 0.5Gi
+          memory: 2.5Gi

@@ -4,7 +4,7 @@ from mantis.controllers.base import BaseController
 
 
 class PIDController(BaseController):
-    model_processing_time_s = 0.02
+    # model_processing_time_s = 0.02
 
     # Sigma is the expected arrival_rate/service_rate
     target_sigma = 0.4
@@ -13,6 +13,9 @@ class PIDController(BaseController):
     k_p = 1
     k_i = 0
     k_d = 0
+
+    def __init__(self, model_processing_time_s):
+        self.model_processing_time_s = float(model_processing_time_s)
 
     def get_action_from_state(self, lats, deltas, num_replicas, queue_length):
         num_queries_arrived = len(deltas)

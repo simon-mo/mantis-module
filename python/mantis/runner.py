@@ -16,6 +16,7 @@ import yaml
 
 from mantis.models import catalogs
 from mantis.controllers import registry
+from mantis.util import parse_custom_args
 
 
 logger = get_logger()
@@ -124,9 +125,10 @@ class MetricConnection:
 @click.option("--workload", required=True, type=click.Choice(list(catalogs.keys())))
 @click.option("--workload-args", default="", type=str)
 @click.option("--controller", required=True, type=click.Choice(list(registry.keys())))
-def run_controller(load, workload, controller, workload_args):
+@click.option("--controller-args", default="", type=str)
+def run_controller(load, workload, controller, workload_args, controller_args):
     client = K8sClient()
-    ctl = registry[controller]()
+    ctl = registry[controller](**parse_custom_args(controller_args))
 
     logger.msg("Creating redis")
     redis_ip = client.create_redis()
@@ -136,20 +138,21 @@ def run_controller(load, workload, controller, workload_args):
     r.set("fractional_prob", str(0.02))
 
     logger.msg("Creating workers")
-    client.create_workers(redis_ip, workload="sleep", workload_args=workload_args)
+    client.create_workers(redis_ip, workload=workload, workload_args=workload_args)
 
     logger.msg("Creating load generator")
-    client.create_load_generator(
-        redis_ip, workload="sleep", load_file="/data/Auckland-10min.npy"
-    )
+    client.create_load_generator(redis_ip, workload=workload, load_file=load)
 
     # Let workers and load gen starts
     r.set("worker_should_go", "true")
     r.set("load_gen_should_go", "true")
 
+    result_path = "/result.jsonl"
+    result_file = open(result_path, "w")
+
     def scale(new_reps):
         new_reps = max(new_reps, 1)
-        new_reps = min(new_reps, 32)
+        new_reps = min(new_reps, 72)
 
         # Set integer component
         client.scale_workers(int(new_reps))
@@ -177,7 +180,8 @@ def run_controller(load, workload, controller, workload_args):
                 **dict(zip(map(str, percentiles), np.percentile(summary, percentiles))),
             )
         else:
-            logger.msg("No result received in 5sec")
+            logger.msg(f"No result received in 5sec, flushing file to {result_path}")
+            result_file.flush()
 
         val = r.execute_command("mantis.status")
 
@@ -213,5 +217,9 @@ def run_controller(load, workload, controller, workload_args):
         logger.msg("Scaling to", from_=curr_reps, to_=target_reps, delta=action)
 
         scale(target_reps)
+
+        msg["e2e_latency"] = summary
+        result_file.write(json.dumps(msg))
+        result_file.write("\n")
 
         time.sleep(5)

@@ -10,6 +10,7 @@ import click
 import redis
 from structlog import get_logger
 from mantis.models import catalogs
+from mantis.util import parse_custom_args
 
 logger = get_logger()
 logger = logger.bind(role="consumer")
@@ -76,12 +77,10 @@ class FractionalValueMonitor(threading.Thread):
 def consume(redis_ip, redis_port, is_fractional, workload, custom_args):
     init_args = dict()
     if custom_args:
-        for k, v in map(lambda s: s.split("="), custom_args.split(",")):
-            init_args[k] = v
-        logger.msg(f"Custom arguments are not None. The parsed result is {init_args}")
-
+        init_args.update(parse_custom_args(custom_args))
     r = redis.Redis(redis_ip, port=redis_port, decode_responses=True)
     queue_name = uuid.uuid4().hex
+    logger.msg(f"My queue uuid is {queue_name}")
     worker = catalogs[workload](**init_args)
 
     while not r.get("worker_should_go"):
@@ -94,6 +93,7 @@ def consume(redis_ip, redis_port, is_fractional, workload, custom_args):
         sleeper_thread.start()
 
     r.execute_command("mantis.add_queue", queue_name)
+    logger.msg("Queue added to redis")
 
     next_query = None
 
@@ -106,23 +106,35 @@ def consume(redis_ip, redis_port, is_fractional, workload, custom_args):
     def signal_handler(*args):
         nonlocal next_query
         logger.msg("SIGNAL received, Draining the queue...")
-        r.execute_command("mantis.drop_queue", queue_name)
-        thread_should_stop.set()
+        try:
+            r.execute_command("mantis.drop_queue", queue_name)
+            thread_should_stop.set()
 
-        if next_query:
-            work_on_single_query(next_query)
+            if next_query:
+                work_on_single_query(next_query)
 
-        items_left = r.llen(queue_name)
-        logger.msg("{} item left, processing...".format(items_left))
-        for _ in range(items_left):
-            sleeper_thread.try_sleep()
-            next_query = r.lpop(queue_name)
-            work_on_single_query(next_query)
-        logger.msg("All done!")
-        sys.exit(0)
+            items_left = r.llen(queue_name)
+            logger.msg("{} item left, processing...".format(items_left))
+            for _ in range(items_left):
+                if sleeper_thread:
+                    sleeper_thread.try_sleep()
+                next_query = r.lpop(queue_name)
+                work_on_single_query(next_query)
+            logger.msg("All done!")
+        except Exception as e:
+            logger.msg(f"Exception happened while handling draining signal {e}")
+        finally:
+            sys.exit(0)
 
     # Handle SIGTERM
-    signal.signal(signal.SIGTERM, signal_handler)
+    def sigterm_wrapper(*args):
+        logger.msg("SIGTERM caught")
+        signal_handler()
+
+    signal.signal(signal.SIGTERM, sigterm_wrapper)
+    signal.signal(signal.SIGHUP, lambda *args: logger.msg("SIGUP caught"))
+
+    logger.msg("Signal handler installed")
 
     try:
         while True:
@@ -138,4 +150,5 @@ def consume(redis_ip, redis_port, is_fractional, workload, custom_args):
             next_query = None
     # Handle SIGINT
     except KeyboardInterrupt:
+        logger.msg("SIGINT caught")
         signal_handler()

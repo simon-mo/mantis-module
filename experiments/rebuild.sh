@@ -4,5 +4,6 @@ cd ..
 make
 cd experiments
 
-kubectl delete jobs --all
+./cleanup.sh
+
 kubectl apply -f master_ctl.yaml

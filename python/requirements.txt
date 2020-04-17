@@ -5,3 +5,4 @@ redis
 tqdm
 colorama
 pykube-ng
+msgpack

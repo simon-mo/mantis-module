@@ -18,10 +18,11 @@ spec:
           command: [
             "mantis",
             "run-controller",
-            "--load", "/data/Auckland-10min.npy",
+            "--load", "/data/debug-200-400-qps-2min.npy",
             "--workload", "sleep",
-            "--workload-args", "sleep_time_s=0.0008",
-            "--controller", "pid"
+            "--workload-args", "sleep_time_s=0.04",  # qps = 50
+            "--controller", "pid",
+            "--controller-args", "model_processing_time_s=0.04" # model_processing_time
           ]
           volumeMounts:
           - mountPath: /data

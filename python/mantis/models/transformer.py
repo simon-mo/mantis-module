@@ -7,7 +7,8 @@ class SentimentAnalysis:
 
     def __call__(self, payload):
         # 51.7 ms ± 104 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
-        return self.nlp(payload)
+        # 1s / 52ms = 19.3 qps -> 52 replicas for 1000 qps
+        return str(self.nlp(payload))
 
     @staticmethod
     def generate_workload():
