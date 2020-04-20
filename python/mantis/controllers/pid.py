@@ -45,6 +45,20 @@ class PIDController(BaseController):
 
 
 def test_pid():
-    pid = PID()
+    pid = PIDController(model_processing_time_s=0.5)
 
     no_action = pid.get_action_from_state([], [], 0, 0)
+    assert no_action == 0
+
+    # arrival rate >> service rate
+    deltas = np.zeros(100)
+    lats = np.zeros(10)
+    num_replicas = 10
+    increase = pid.get_action_from_state(lats, deltas, num_replicas, 0)
+    assert increase > 0
+
+    # arrival rate << service rate
+    deltas = np.zeros(1)
+    lats = np.zeros(100)
+    decrease = pid.get_action_from_state(lats, deltas, num_replicas, 0)
+    assert decrease < 0

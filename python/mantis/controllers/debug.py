@@ -4,7 +4,7 @@ import random
 
 
 class DoNothingController(BaseController):
-    # Use for debuggin, do nothing
+    # Use for debugging, do nothing
     def get_action_from_state(
         self,
         e2e_latency_since_last_call,
