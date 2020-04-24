@@ -29,10 +29,10 @@ spec:
             ]
           resources:
             requests:
-              cpu: 500m
+              cpu: 1000m
               memory: 0.5Gi
             limits:
-              cpu: 2000m
+              cpu: 1000m
               memory: 2.5Gi
 ---
 apiVersion: v1
@@ -55,8 +55,8 @@ spec:
         ]
       resources:
         requests:
-          cpu: 500m
+          cpu: 1000m
           memory: 0.5Gi
         limits:
-          cpu: 2000m
+          cpu: 1000m
           memory: 2.5Gi

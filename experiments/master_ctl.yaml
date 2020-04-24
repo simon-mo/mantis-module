@@ -18,15 +18,37 @@ spec:
           command: [
             "mantis",
             "run-controller",
-            "--load", "/data/debug-200-400-qps-2min.npy",
+            "--load", "/data/Waikato-1h.npy",
             "--workload", "sleep",
-            "--workload-args", "sleep_time_s=0.04",  # qps = 50
+            "--workload-args", "sleep_time_s=0.015",
+            "--start-replicas", "5",
             "--controller", "pid",
-            "--controller-args", "model_processing_time_s=0.04" # model_processing_time
+            "--controller-args", "model_processing_time_s=0.015,target_sigma=0.4" 
           ]
           volumeMounts:
           - mountPath: /data
             name: data-volume
+          env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: aws-s3-creds
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: aws-s3-creds
+                key: AWS_SECRET_ACCESS_KEY
+          - name: SLACK_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: slack-endpoint
+                key: SLACK_ENDPOINT
+          resources:
+            requests:
+              mantis.com/concurrent: 1
+            limits:
+              mantis.com/concurrent: 1
       initContainers:
         - name: copy-traces
           image: fissure/traces:latest

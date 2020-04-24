@@ -6,3 +6,10 @@ tqdm
 colorama
 pykube-ng
 msgpack
+boto3
+papermill
+jupyter
+numpy
+pandas
+matplotlib
+seaborn

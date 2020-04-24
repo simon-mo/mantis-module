@@ -1,11 +1,15 @@
 import subprocess
+import glob
 import random
 import string
 import time
 import json
 import os
 from pathlib import Path
-import sqlite3
+from collections import OrderedDict, Counter
+import inspect
+from datetime import datetime
+from pprint import pformat
 
 import numpy as np
 import redis
@@ -13,10 +17,12 @@ from structlog import get_logger
 import click
 import pykube
 import yaml
+import boto3
+import papermill as pm
 
 from mantis.models import catalogs
 from mantis.controllers import registry
-from mantis.util import parse_custom_args
+from mantis.util import parse_custom_args, post_result_to_slack
 
 
 logger = get_logger()
@@ -35,11 +41,17 @@ class K8sClient:
     def __init__(self):
         config = pykube.KubeConfig.from_env()
         self.k8s_api = pykube.HTTPClient(config)
+        self.should_delete_queue = []
 
     def recreate_resource(self, resource, spec):
         k8s_obj = resource(self.k8s_api, spec)
         k8s_obj.delete()
         k8s_obj.create()
+        self.should_delete_queue.append(k8s_obj)
+
+    def delete_all_resource(self):
+        for resource in self.should_delete_queue:
+            resource.delete()
 
     def create_redis(self):
         with open(K8S_DIR / "1_redis.yaml") as f:
@@ -56,7 +68,7 @@ class K8sClient:
 
         return redis_name
 
-    def create_workers(self, redis_name, workload, workload_args):
+    def create_workers(self, redis_name, workload, workload_args, start_replicas):
         with open(K8S_DIR / "2_worker.yaml") as f:
             workers, frac_worker = list(yaml.load_all(f, Loader=yaml.FullLoader))
         envvars = [
@@ -65,6 +77,7 @@ class K8sClient:
             {"name": "MANTIS_CUSTOM_ARGS", "value": workload_args},
         ]
         workers["spec"]["template"]["spec"]["containers"][0]["env"] = envvars
+        workers["spec"]["replicas"] = start_replicas
         frac_worker["spec"]["containers"][0]["env"] = envvars
         frac_worker["metadata"]["name"] += "-" + random_letters()
 
@@ -85,7 +98,9 @@ class K8sClient:
 
         states = worker_states()
         while not all(states.values()):
-            logger.msg(f"Waiting for all worker to become ready: {states}")
+            logger.msg(
+                f"Waiting for all worker to become ready: {Counter(states.values()).most_common()}"
+            )
             time.sleep(2)
             states = worker_states()
 
@@ -110,14 +125,81 @@ class K8sClient:
         self.recreate_resource(pykube.Job, gen)
 
 
-class MetricConnection:
-    def __init__(self):
-        self.path = "./mantis_result_{}.db".format(int(time.time()))
-        self.conn = sqlite3.connect(self.path, isolation_level=None)
-        self.conn.execute("pragma synchronou=0")
+class ResultWriter:
+    def __init__(self, config):
+        base = "/{}-{}-{}/{}".format(
+            config["load"].replace("/data/", "").replace(".npy", ""),
+            config["workload"],
+            config["controller"],
+            datetime.now().strftime("%m-%d-%H-%M-%S"),
+        )
+        os.makedirs(base)
+        self.base = base
 
+        self.config_path = base + "/config.json"
+        self.query_trace_path = base + "/trace.jsonl"
+        self.mantis_status_path = base + "/status.jsonl"
 
-# TODO: finish this ^
+        self.trace_file = open(self.query_trace_path, "w")
+        self.status_file = open(self.mantis_status_path, "w")
+
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+        self.config = config
+
+    def write_trace_raw(self, msg):
+        self.trace_file.write(msg)
+        self.trace_file.write("\n")
+
+    def write_summary_dict(self, data):
+        self.status_file.write(json.dumps(data))
+        self.status_file.write("\n")
+
+    def flush(self):
+        self.trace_file.flush()
+        self.status_file.flush()
+
+    def experiment_done(self):
+        self.run_notebook_script()
+        self.upload()
+        self.post_result()
+
+    def upload(self):
+        s3_client = boto3.Session().client("s3")
+        for path in glob.glob(f"{self.base}/*"):
+            if path.endswith("/"):
+                continue
+            s3_client.upload_file(
+                Filename=path,
+                Bucket="mantis-osdi-2020",
+                Key=path[1:],
+                ExtraArgs={"ACL": "public-read"},
+            )
+        print("Upload completed!")
+
+    def run_notebook_script(self):
+        nb_path = Path(__file__).parent / "plot_mantis.ipynb"
+        pm.execute_notebook(
+            str(nb_path),
+            self.base + "/plot_mantis.ipynb",
+            parameters=dict(result_dir=self.base),
+        )
+
+    def post_result(self):
+        image_base_url = (
+            "https://mantis-osdi-2020.s3-us-west-2.amazonaws.com" + self.base
+        )
+        images = {
+            "Latency CDF": image_base_url + "/latency_cdf.png",
+            "Controller Actions": image_base_url + "/actions.png",
+        }
+        text = f"""
+Experiment `{self.base}` done:
+```
+{pformat(self.config)}
+```
+        """
+        post_result_to_slack(text, images)
 
 
 @click.command()
@@ -126,7 +208,17 @@ class MetricConnection:
 @click.option("--workload-args", default="", type=str)
 @click.option("--controller", required=True, type=click.Choice(list(registry.keys())))
 @click.option("--controller-args", default="", type=str)
-def run_controller(load, workload, controller, workload_args, controller_args):
+@click.option("--max-replicas", type=int, default=72)
+@click.option("--start-replicas", type=int, default=5)
+def run_controller(
+    load,
+    workload,
+    controller,
+    workload_args,
+    controller_args,
+    max_replicas,
+    start_replicas,
+):
     client = K8sClient()
     ctl = registry[controller](**parse_custom_args(controller_args))
 
@@ -138,22 +230,43 @@ def run_controller(load, workload, controller, workload_args, controller_args):
     r.set("fractional_prob", str(0.02))
 
     logger.msg("Creating workers")
-    client.create_workers(redis_ip, workload=workload, workload_args=workload_args)
+    client.create_workers(
+        redis_ip,
+        workload=workload,
+        workload_args=workload_args,
+        start_replicas=start_replicas,
+    )
 
     logger.msg("Creating load generator")
+    num_queries_total, num_queries_received = len(np.load(load)), 0
     client.create_load_generator(redis_ip, workload=workload, load_file=load)
 
-    # Let workers and load gen starts
+    # Retrieve all parameters
+    _local_vars = locals()
+    config = {
+        v: _local_vars[v] for v in inspect.signature(run_controller.callback).parameters
+    }
+
+    # Let workers starts
     r.set("worker_should_go", "true")
+
+    def get_num_replica_registered():
+        return len(json.loads(r.execute_command("mantis.status"))["queue_sizes"])
+
+    replica_regstered = 0
+    while replica_regstered != start_replicas + 1:
+        logger.msg(
+            "Waiting for replicas to register", replica_regstered=replica_regstered
+        )
+        replica_regstered = get_num_replica_registered()
+        time.sleep(1)
+
+    # Let load gen start
     r.set("load_gen_should_go", "true")
 
-    result_path = "/result.jsonl"
-    result_file = open(result_path, "w")
+    writer = ResultWriter(config)
 
     def scale(new_reps):
-        new_reps = max(new_reps, 1)
-        new_reps = min(new_reps, 72)
-
         # Set integer component
         client.scale_workers(int(new_reps))
         # Set fracitonal component
@@ -162,64 +275,90 @@ def run_controller(load, workload, controller, workload_args, controller_args):
         logger.msg(f"Setting fractional_value={frac_val}")
 
     while True:
+        start = time.time()
+
         # Latency list
         length_to_pop = r.llen(RESULT_KEY)
-        # conn.observe("num_queries_served", length_to_pop)
+        num_queries_received += length_to_pop
 
-        summary = []
+        logger.msg(
+            "Result received: {:.2f}%".format(
+                num_queries_received * 100 / num_queries_total
+            ),
+            received=num_queries_received,
+            total=num_queries_total,
+        )
+
+        e2e_latencies = []
         for _ in range(length_to_pop):
             __, val = r.blpop(RESULT_KEY)
+            writer.write_trace_raw(val)
             parsed_msg = json.loads(val)
+            query_id = parsed_msg["query_id"]
             e2e_latency = float(parsed_msg["_4_done_time"]) - (parsed_msg["_1_lg_sent"])
-            # conn.observe("e2e_latency", e2e_latency)
-            summary.append(e2e_latency)
-        if len(summary):
+            e2e_latencies.append(e2e_latency)
+        if len(e2e_latencies):
             percentiles = [25, 50, 95, 99, 100]
             logger.msg(
-                "Received {} from last interval".format(len(summary)),
-                **dict(zip(map(str, percentiles), np.percentile(summary, percentiles))),
+                "Received {} from last interval".format(len(e2e_latencies)),
+                **OrderedDict(
+                    zip(
+                        map(str, percentiles), np.percentile(e2e_latencies, percentiles)
+                    )
+                ),
             )
         else:
-            logger.msg(f"No result received in 5sec, flushing file to {result_path}")
-            result_file.flush()
+            logger.msg("No result received in 5sec")
 
         val = r.execute_command("mantis.status")
 
-        decoded_msg = json.loads(val)
         msg = json.loads(val)
-        non_scaler_metric = [
-            "real_ts_ns",
-            "queues",
-            "queue_sizes",
-            "dropped_queues",
-            "dropped_queue_sizes",
-            "current_time_ns",
-        ]
-        [decoded_msg.pop(metric) for metric in non_scaler_metric]
-        logger.msg("Gathered metrics...", **decoded_msg)
 
-        curr_int_reps = msg["num_active_replica"] - 1
+        # Msg schema
+        # // Real deltas from last call. List[int]
+        # status_report["real_arrival_ts_ns"] = timestamps_ns;
+        # // Active queue sizes ActiveList[int]
+        # status_report["queue_sizes"] = queue_sizes;
+        # // Dropped queue sizes DropList[int] (Scaling down)
+        # status_report["dropped_queue_sizes"] = dropped_queue_sizes;
+        # // -------------------------------------
+        # status_report["current_ts_ns"] = current_time;
+        # // Float, configurable
+        # status_report["fractional_value"] = fractional_val
+
+        curr_int_reps = len(msg["queue_sizes"]) - 1
         fractional_value = msg["fractional_value"]
         curr_reps = curr_int_reps + fractional_value
-        # conn.observe("current_replicas", curr_reps)
 
         action = ctl.get_action_from_state(
-            np.array(summary) * 1000,
-            np.array(msg["real_ts_ns"]) / 1000,
+            np.array(e2e_latencies) * 1000,
+            np.array(msg["real_arrival_ts_ns"]) / 1000,
             curr_reps,
             sum(msg["queue_sizes"]),
         )
-        # conn.observe("total_queue_size", sum(msg["queue_sizes"]))
-        # conn.observe("dropped_queue_size", sum(msg["dropped_queue_sizes"]))
         target_reps = curr_reps + action
-        # conn.observe("action", action)
-        # conn.observe("target_replicas", target_reps)
+        target_reps = max(target_reps, 1)
+        target_reps = min(target_reps, max_replicas)
+
         logger.msg("Scaling to", from_=curr_reps, to_=target_reps, delta=action)
+
+        msg["ctl_from"] = curr_reps
+        msg["ctl_action"] = action
+        msg["ctl_final_decision"] = target_reps
 
         scale(target_reps)
 
-        msg["e2e_latency"] = summary
-        result_file.write(json.dumps(msg))
-        result_file.write("\n")
+        writer.write_summary_dict(msg)
+        writer.flush()
+        if num_queries_received == num_queries_total:
+            logger.msg("All queries received, exitting...")
+            client.delete_all_resource()
+            writer.experiment_done()
+            break
 
-        time.sleep(5)
+        # Make sure ctl interval is 5s
+        compute_duration = time.time() - start
+        should_sleep = 5 - compute_duration
+        should_sleep = 0 if should_sleep < 0 else should_sleep
+        logger.msg(f"Sleeping for {should_sleep:.2f} s")
+        time.sleep(should_sleep)

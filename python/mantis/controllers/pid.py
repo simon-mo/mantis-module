@@ -7,15 +7,16 @@ class PIDController(BaseController):
     # model_processing_time_s = 0.02
 
     # Sigma is the expected arrival_rate/service_rate
-    target_sigma = 0.4
+    # target_sigma = 0.4
 
     # PID parameters
     k_p = 1
     k_i = 0
     k_d = 0
 
-    def __init__(self, model_processing_time_s):
+    def __init__(self, model_processing_time_s, target_sigma):
         self.model_processing_time_s = float(model_processing_time_s)
+        self.target_sigma = float(target_sigma)
 
     def get_action_from_state(self, lats, deltas, num_replicas, queue_length):
         num_queries_arrived = len(deltas)

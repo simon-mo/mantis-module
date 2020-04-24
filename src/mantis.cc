@@ -252,11 +252,11 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
   nlohmann::json status_report;
 
   // Real deltas from last call. List[int]
-  status_report["real_ts_ns"] = timestamps_ns;
+  status_report["real_arrival_ts_ns"] = timestamps_ns;
 
   // List[UUID]
-  status_report["queues"] = queues;
-  status_report["dropped_queues"] = dropped_queues;
+  // status_report["queues"] = queues;
+  // status_report["dropped_queues"] = dropped_queues;
 
   // Active queue sizes ActiveList[int]
   status_report["queue_sizes"] = queue_sizes;
@@ -266,17 +266,17 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
 
   // -------- Inferred ----------
   // Sum(ActiveList[int], DropList[int])
-  status_report["total_queue_size"] = total_queue_size;
+  // status_report["total_queue_size"] = total_queue_size;
 
   // Int
-  status_report["num_active_replica"] = active_replicas;
+  // status_report["num_active_replica"] = active_replicas;
   // Int
-  status_report["num_dropped_replica"] = dropped_replicas;
+  // status_report["num_dropped_replica"] = dropped_replicas;
   // Int = Int + Int
-  status_report["num_total_replica"] = active_replicas + dropped_replicas;
+  // status_report["num_total_replica"] = active_replicas + dropped_replicas;
 
   // -------------------------------------
-  status_report["current_time_ns"] = current_time;
+  status_report["current_ts_ns"] = current_time;
 
   // Float, configurable
   status_report["fractional_value"] = fractional_val;

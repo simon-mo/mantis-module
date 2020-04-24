@@ -6,3 +6,4 @@
 .vscode
 *.egg-info
 .pytest_cache/
+.env
