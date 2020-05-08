@@ -35,3 +35,24 @@ class RandomAddAndDelete(BaseController):
             return amount
         else:
             return -amount
+
+
+class AddDeleteFixed(BaseController):
+    # Used for microbenchmark
+    def __init__(self, amount):
+        self.amount = int(amount)
+        self.should_add = False
+
+    def get_action_from_state(
+        self,
+        e2e_latency_since_last_call,
+        interarrival_deltas_ms_since_last_call,
+        current_number_of_replicas,
+        queue_length,
+    ):
+        self.should_add = not self.should_add
+
+        if self.should_add:
+            return self.amount
+        else:
+            return -self.amount

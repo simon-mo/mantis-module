@@ -18,12 +18,27 @@ spec:
           command: [
             "mantis",
             "run-controller",
-            "--load", "/data/Waikato-1h.npy",
-            "--workload", "sleep",
-            "--workload-args", "sleep_time_s=0.015",
-            "--start-replicas", "5",
+            "--load", "/data/Auckland-10min.npy",
+            "--workload", "busy-sleep",
+            "--workload-args", "sleep_time_s=0.02",
+            "--start-replicas", "2",
+            # "--controller", "k8s_native",
+            # "--controller-args", "target_cpu=50,max_replicas=72",
+            "--controller-time-step", "5",
+
             "--controller", "pid",
-            "--controller-args", "model_processing_time_s=0.015,target_sigma=0.4" 
+            "--controller-args", "model_processing_time_s=0.02,target_sigma=0.5" ,
+
+            # Spin up/down benchmark:
+            # "--load", "/data/one-qps-ten-minutes.npy",
+            # "--workload", "sleep",
+            # "--workload-args", "sleep_time_s=0.02",
+            # "--start-replicas", "30",
+            # "--controller", "add_delete_fixed",
+            # "--controller-args", "amount=20",
+            # "--controller-time-step", "20"
+
+            # "--fractional-sleep", "0.02"
           ]
           volumeMounts:
           - mountPath: /data
@@ -61,21 +76,3 @@ spec:
           hostPath:
             path: /trace-data
             type: DirectoryOrCreate
----
-kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: controller-role
-subjects:
-  - kind: ServiceAccount
-    name: controller-role
-    namespace: default
-roleRef:
-  kind: ClusterRole
-  name: cluster-admin
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: controller-role

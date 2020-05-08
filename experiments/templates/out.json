@@ -1,0 +1,103 @@
+{
+   "apiVersion": "batch/v1",
+   "kind": "Job",
+   "metadata": {
+      "name": "hi"
+   },
+   "spec": {
+      "backoffLimit": 0,
+      "template": {
+         "metadata": {
+            "labels": {
+               "app": "mantis-controller"
+            }
+         },
+         "spec": {
+            "containers": [
+               {
+                  "command": [
+                     "mantis",
+                     "run-controller",
+                     "a",
+                     "b"
+                  ],
+                  "env": [
+                     {
+                        "name": "AWS_ACCESS_KEY_ID",
+                        "valueFrom": {
+                           "secretKeyRef": {
+                              "key": "AWS_ACCESS_KEY_ID",
+                              "name": "aws-s3-creds"
+                           }
+                        }
+                     },
+                     {
+                        "name": "AWS_SECRET_ACCESS_KEY",
+                        "valueFrom": {
+                           "secretKeyRef": {
+                              "key": "AWS_SECRET_ACCESS_KEY",
+                              "name": "aws-s3-creds"
+                           }
+                        }
+                     },
+                     {
+                        "name": "SLACK_ENDPOINT",
+                        "valueFrom": {
+                           "secretKeyRef": {
+                              "key": "SLACK_ENDPOINT",
+                              "name": "slack-endpoint"
+                           }
+                        }
+                     }
+                  ],
+                  "image": "fissure/py:latest",
+                  "imagePullPolicy": "Always",
+                  "name": "controller",
+                  "resources": {
+                     "limits": {
+                        "mantis.com/concurrent": 1
+                     },
+                     "requests": {
+                        "mantis.com/concurrent": 1
+                     }
+                  },
+                  "volumeMounts": [
+                     {
+                        "mountPath": "/data",
+                        "name": "data-volume"
+                     }
+                  ]
+               }
+            ],
+            "initContainers": [
+               {
+                  "command": [
+                     "sh",
+                     "-c",
+                     "cp -r /data/* /trace-data/"
+                  ],
+                  "image": "fissure/traces:latest",
+                  "name": "copy-traces",
+                  "volumeMounts": [
+                     {
+                        "mountPath": "/trace-data",
+                        "name": "data-volume"
+                     }
+                  ]
+               }
+            ],
+            "restartPolicy": "Never",
+            "serviceAccountName": "controller-role",
+            "volumes": [
+               {
+                  "hostPath": {
+                     "path": "/trace-data",
+                     "type": "DirectoryOrCreate"
+                  },
+                  "name": "data-volume"
+               }
+            ]
+         }
+      }
+   }
+}

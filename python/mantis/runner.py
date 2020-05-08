@@ -3,6 +3,7 @@ import glob
 import random
 import string
 import time
+import math
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ import boto3
 import papermill as pm
 
 from mantis.models import catalogs
-from mantis.controllers import registry
+from mantis.controllers import registry, DONT_SCALE
 from mantis.util import parse_custom_args, post_result_to_slack
 
 
@@ -70,7 +71,8 @@ class K8sClient:
 
     def create_workers(self, redis_name, workload, workload_args, start_replicas):
         with open(K8S_DIR / "2_worker.yaml") as f:
-            workers, frac_worker = list(yaml.load_all(f, Loader=yaml.FullLoader))
+            # workers, frac_worker = list(yaml.load_all(f, Loader=yaml.FullLoader))
+            [workers] = list(yaml.load_all(f, Loader=yaml.FullLoader))
         envvars = [
             {"name": "MANTIS_REDIS_IP", "value": redis_name},
             {"name": "MANTIS_WORKLOAD", "value": workload},
@@ -78,21 +80,21 @@ class K8sClient:
         ]
         workers["spec"]["template"]["spec"]["containers"][0]["env"] = envvars
         workers["spec"]["replicas"] = start_replicas
-        frac_worker["spec"]["containers"][0]["env"] = envvars
-        frac_worker["metadata"]["name"] += "-" + random_letters()
+        # frac_worker["spec"]["containers"][0]["env"] = envvars
+        # frac_worker["metadata"]["name"] += "-" + random_letters()
 
         self.recreate_resource(pykube.Deployment, workers)
-        self.recreate_resource(pykube.Pod, frac_worker)
+        # self.recreate_resource(pykube.Pod, frac_worker)
 
         def worker_states():
             worker_pods = list(
                 pykube.Pod.objects(self.k8s_api).filter(selector={"app": "worker"})
             )
-            worker_pods.append(
-                pykube.Pod.objects(self.k8s_api).get_by_name(
-                    frac_worker["metadata"]["name"]
-                )
-            )
+            # worker_pods.append(
+            #     pykube.Pod.objects(self.k8s_api).get_by_name(
+            #         frac_worker["metadata"]["name"]
+            #     )
+            # )
             states = {pod.name: pod.ready for pod in worker_pods}
             return states
 
@@ -159,12 +161,16 @@ class ResultWriter:
         self.trace_file.flush()
         self.status_file.flush()
 
-    def experiment_done(self):
+    def experiment_done(self, result=dict()):
         self.run_notebook_script()
-        self.upload()
-        self.post_result()
+        self.upload(result)
+        self.post_result(result)
 
-    def upload(self):
+    def upload(self, result=None):
+        if result:
+            with open(f"{self.base}/result.json", "w") as f:
+                json.dump(result, f)
+
         s3_client = boto3.Session().client("s3")
         for path in glob.glob(f"{self.base}/*"):
             if path.endswith("/"):
@@ -185,7 +191,7 @@ class ResultWriter:
             parameters=dict(result_dir=self.base),
         )
 
-    def post_result(self):
+    def post_result(self, result=dict()):
         image_base_url = (
             "https://mantis-osdi-2020.s3-us-west-2.amazonaws.com" + self.base
         )
@@ -198,8 +204,13 @@ Experiment `{self.base}` done:
 ```
 {pformat(self.config)}
 ```
+Result:
+```
+{pformat(result)}
+```
         """
         post_result_to_slack(text, images)
+
 
 
 @click.command()
@@ -210,6 +221,8 @@ Experiment `{self.base}` done:
 @click.option("--controller-args", default="", type=str)
 @click.option("--max-replicas", type=int, default=72)
 @click.option("--start-replicas", type=int, default=5)
+@click.option("--controller-time-step", type=float, default=5)
+# @click.option("--fractional-sleep", type=float, required=True)
 def run_controller(
     load,
     workload,
@@ -218,6 +231,8 @@ def run_controller(
     controller_args,
     max_replicas,
     start_replicas,
+    controller_time_step,
+    # fractional_sleep,
 ):
     client = K8sClient()
     ctl = registry[controller](**parse_custom_args(controller_args))
@@ -226,8 +241,8 @@ def run_controller(
     redis_ip = client.create_redis()
 
     r = redis.Redis(redis_ip, port=7000, decode_responses=True)
-    r.set("fractional_sleep", str(0.02))
-    r.set("fractional_prob", str(0.02))
+    # r.set("fractional_sleep", str(fractional_sleep))
+    # r.set("fractional_prob", str(0.5))
 
     logger.msg("Creating workers")
     client.create_workers(
@@ -254,7 +269,7 @@ def run_controller(
         return len(json.loads(r.execute_command("mantis.status"))["queue_sizes"])
 
     replica_regstered = 0
-    while replica_regstered != start_replicas + 1:
+    while replica_regstered != start_replicas:
         logger.msg(
             "Waiting for replicas to register", replica_regstered=replica_regstered
         )
@@ -268,11 +283,14 @@ def run_controller(
 
     def scale(new_reps):
         # Set integer component
-        client.scale_workers(int(new_reps))
+        client.scale_workers(new_reps)
         # Set fracitonal component
-        frac_val = str(new_reps % 1.0)
-        r.set("fractional_prob", frac_val)
-        logger.msg(f"Setting fractional_value={frac_val}")
+        # frac_val = str(new_reps % 1.0)
+        # r.set("fractional_prob", frac_val)
+        # logger.msg(f"Setting fractional_value={frac_val}")
+
+    # Stop after stop_condition_count_down * timestep after receiving 100% of the queries
+    stop_condition_count_down = 3
 
     while True:
         start = time.time()
@@ -325,10 +343,13 @@ def run_controller(
         # status_report["current_ts_ns"] = current_time;
         # // Float, configurable
         # status_report["fractional_value"] = fractional_val
+        # // Queue added/droppede event List[json]
+        # status_report["queue_events"] = events;
+        #   event["time_ns"] = curr_time_ns; event["type"] = ADD/DROP; event["queue_id"] = queue_name;
 
-        curr_int_reps = len(msg["queue_sizes"]) - 1
-        fractional_value = msg["fractional_value"]
-        curr_reps = curr_int_reps + fractional_value
+        curr_int_reps = len(msg["queue_sizes"])
+        # fractional_value = msg["fractional_value"]
+        curr_reps = curr_int_reps
 
         action = ctl.get_action_from_state(
             np.array(e2e_latencies) * 1000,
@@ -336,29 +357,48 @@ def run_controller(
             curr_reps,
             sum(msg["queue_sizes"]),
         )
-        target_reps = curr_reps + action
-        target_reps = max(target_reps, 1)
-        target_reps = min(target_reps, max_replicas)
+        if action != DONT_SCALE:
+            target_reps = curr_reps + action
+            target_reps = max(target_reps, 1)
+            target_reps = min(target_reps, max_replicas)
+            # PID adjustment
+            if action > 0:
+                target_reps = math.ceil(target_reps)  # Round up
+            if action < 0:
+                target_reps = math.floor(target_reps)  # Round down
+            logger.msg("Scaling to", from_=curr_reps, to_=target_reps, delta=action)
+            msg["ctl_from"] = curr_reps
+            msg["ctl_action"] = action
+            msg["ctl_final_decision"] = target_reps
 
-        logger.msg("Scaling to", from_=curr_reps, to_=target_reps, delta=action)
-
-        msg["ctl_from"] = curr_reps
-        msg["ctl_action"] = action
-        msg["ctl_final_decision"] = target_reps
-
-        scale(target_reps)
+            scale(target_reps)
+        else:
+            msg["ctl_from"] = curr_reps
+            msg["ctl_action"] = 0
+            msg["ctl_final_decision"] = curr_reps
+            logger.msg(f"Controller returned {DONT_SCALE}, skipping scaling")
 
         writer.write_summary_dict(msg)
         writer.flush()
-        if num_queries_received == num_queries_total:
+
+        ## TODO: if queries not equal, wait for few cycles
+        finished_percent = int((num_queries_received / num_queries_total) * 100)
+        if finished_percent == 100:
+            stop_condition_count_down -= 1
+
+        if stop_condition_count_down <= 0:
             logger.msg("All queries received, exitting...")
             client.delete_all_resource()
-            writer.experiment_done()
+            result = {
+                "num_queries_received": num_queries_received,
+                "num_queries_total": num_queries_total,
+            }
+            writer.experiment_done(result)
             break
 
         # Make sure ctl interval is 5s
         compute_duration = time.time() - start
-        should_sleep = 5 - compute_duration
+        should_sleep = controller_time_step - compute_duration
         should_sleep = 0 if should_sleep < 0 else should_sleep
         logger.msg(f"Sleeping for {should_sleep:.2f} s")
         time.sleep(should_sleep)

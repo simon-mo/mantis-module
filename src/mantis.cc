@@ -20,6 +20,7 @@ constexpr std::string_view REMOVED_QUEUES = "removed_queues";
 constexpr std::string_view REAL_TIMESTAMPS_NS = "real_timestamp";
 constexpr std::string_view FRACTIONAL_PROB = "fractional_prob";
 constexpr std::string_view COMPLETION_QUEUE = "completion_queue";
+constexpr std::string_view QUEUE_EVENTS = "queue_events";
 
 inline std::vector<std::string> get_array_reply(RedisModuleCallReply *data_array) {
   size_t data_length = RedisModule_CallReplyLength(data_array);
@@ -154,6 +155,17 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
   return REDISMODULE_OK;
 }
 
+inline std::string make_event_string(std::string type, std::string queue_name) {
+  long long curr_time = get_current_time_ns();
+  nlohmann::json event;
+  event["time_ns"] = curr_time;
+  event["type"] = type;
+  event["queue_id"] = queue_name;
+  std::string serialized_event = event.dump();
+  LOG(INFO) << "Created event" << serialized_event;
+  return serialized_event;
+}
+
 // mantis.add_queue my-random-uuid-queue-name
 int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
   if (argc != 2) return RedisModule_WrongArity(ctx);
@@ -168,6 +180,8 @@ int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int 
   RedisModuleString *queue_name = argv[1];
 
   RedisModule_Call(ctx, "SADD", "cs", ACTIVE_QUEUES.data(), queue_name);
+  RedisModule_Call(ctx, "RPUSH", "cc", QUEUE_EVENTS.data(),
+                   make_event_string("ADD", queue_name_s).c_str());
 
   RedisModule_ReplyWithNull(ctx);
   return REDISMODULE_OK;
@@ -185,9 +199,25 @@ int MantisCommand(DROP_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int
   RedisModuleString *queue_name = argv[1];
   RedisModule_Call(ctx, "SADD", "cs", REMOVED_QUEUES.data(), queue_name);
   RedisModule_Call(ctx, "SREM", "cs", ACTIVE_QUEUES.data(), queue_name);
+  RedisModule_Call(ctx, "RPUSH", "cc", QUEUE_EVENTS.data(),
+                   make_event_string("DROP", queue_name_s).c_str());
 
   RedisModule_ReplyWithNull(ctx);
   return REDISMODULE_OK;
+}
+
+inline void drain_redis_list(RedisModuleCtx *ctx, std::string_view key,
+                             std::function<void(std::string)> on_item) {
+  RedisModuleCallReply *lrange_reply;
+  lrange_reply = RedisModule_Call(ctx, "LRANGE", "ccc", key.data(), "0", "-1");
+  std::vector<std::string> array = get_array_reply(lrange_reply);
+  for (auto &item : array) {
+    on_item(item);
+  }
+  size_t array_size = array.size();
+  for (size_t i = 0; i < array_size; i++) {
+    RedisModule_Call(ctx, "LPOP", "c", key.data());
+  }
 }
 
 // mantis.status
@@ -199,18 +229,14 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
 
   // Get timestamps in ns
   std::vector<long long> timestamps_ns;
-  RedisModuleCallReply *lrange_reply;
-  lrange_reply =
-      RedisModule_Call(ctx, "LRANGE", "ccc", REAL_TIMESTAMPS_NS.data(), "0", "-1");
-  std::vector<std::string> array = get_array_reply(lrange_reply);
-  for (auto &item : array) {
+  drain_redis_list(ctx, REAL_TIMESTAMPS_NS, [&timestamps_ns](std::string item) {
     timestamps_ns.push_back(std::stoll(item));
-  }
-  size_t array_size = array.size();
-  for (size_t i = 0; i < array_size; i++) {
-    RedisModule_Call(ctx, "LPOP", "c", REAL_TIMESTAMPS_NS.data());
-  }
+  });
   // End get timestamp
+
+  std::vector<std::string> events;
+  drain_redis_list(ctx, QUEUE_EVENTS,
+                   [&events](std::string item) { events.push_back(item); });
 
   // Begin get fractional_value
   RedisModuleCallReply *reply;
@@ -245,14 +271,17 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
       std::accumulate(dropped_queue_sizes.begin(), dropped_queue_sizes.end(), 0);
   // End get queue sizes
 
-  size_t active_replicas = queues.size();
-  size_t dropped_replicas = dropped_queues.size();
+  // size_t active_replicas = queues.size();
+  // size_t dropped_replicas = dropped_queues.size();
   long long current_time = get_current_time_ns();
 
   nlohmann::json status_report;
 
   // Real deltas from last call. List[int]
   status_report["real_arrival_ts_ns"] = timestamps_ns;
+
+  // Queue added/droppede event List[json]
+  status_report["queue_events"] = events;
 
   // List[UUID]
   // status_report["queues"] = queues;

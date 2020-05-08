@@ -1,4 +1,5 @@
 import time
+import hashlib
 
 
 class Sleeper:
@@ -11,3 +12,13 @@ class Sleeper:
     @staticmethod
     def generate_workload():
         return ""
+
+
+class BusySleeper(Sleeper):
+    def __call__(self, *args):
+        start = time.perf_counter()
+        while True:
+            hashlib.sha256(b"").hexdigest()
+            end = time.perf_counter()
+            if end - start >= self.sleep_time:
+                break

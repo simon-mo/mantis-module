@@ -1,4 +1,4 @@
-set -x
+set -ex
 
 cd ..
 make
