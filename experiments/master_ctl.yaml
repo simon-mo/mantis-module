@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: controller
+  name: controller-5h
 spec:
   backoffLimit: 0
   template:
@@ -18,10 +18,12 @@ spec:
           command: [
             "mantis",
             "run-controller",
-            "--load", "/data/Auckland-10min.npy",
+            # "--load", "/data/Auckland-10min.npy",
+            "--load", "/data/Waikato-1h-3.npy",
+            # "--load", "/data/Waikato-5h.npy",
             "--workload", "busy-sleep",
             "--workload-args", "sleep_time_s=0.02",
-            "--start-replicas", "2",
+            "--start-replicas", "5",
             # "--controller", "k8s_native",
             # "--controller-args", "target_cpu=50,max_replicas=72",
             "--controller-time-step", "5",

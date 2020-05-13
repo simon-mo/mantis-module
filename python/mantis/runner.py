@@ -212,7 +212,6 @@ Result:
         post_result_to_slack(text, images)
 
 
-
 @click.command()
 @click.option("--load", required=True, type=click.Path(exists=True))
 @click.option("--workload", required=True, type=click.Choice(list(catalogs.keys())))
@@ -321,7 +320,11 @@ def run_controller(
                 "Received {} from last interval".format(len(e2e_latencies)),
                 **OrderedDict(
                     zip(
-                        map(str, percentiles), np.percentile(e2e_latencies, percentiles)
+                        map(str, percentiles),
+                        map(
+                            lambda s: f"{s:.4f}",
+                            np.percentile(e2e_latencies, percentiles),
+                        ),
                     )
                 ),
             )
@@ -382,9 +385,17 @@ def run_controller(
         writer.flush()
 
         ## TODO: if queries not equal, wait for few cycles
-        finished_percent = int((num_queries_received / num_queries_total) * 100)
-        if finished_percent == 100:
+        finished_percent = "{:.2f}".format(
+            num_queries_received * 100 / num_queries_total
+        )
+        if finished_percent == "100.00":
             stop_condition_count_down -= 1
+            logger.msg(
+                "Finished percent is 100, waiting for few more rounds",
+                stop_condition_count_down=stop_condition_count_down,
+            )
+        elif num_queries_received * 100 / num_queries_total > 99:
+            logger.msg("Finished percent string is: " + finished_percent)
 
         if stop_condition_count_down <= 0:
             logger.msg("All queries received, exitting...")
@@ -392,6 +403,7 @@ def run_controller(
             result = {
                 "num_queries_received": num_queries_received,
                 "num_queries_total": num_queries_total,
+                "missing_queries": num_queries_total - num_queries_received,
             }
             writer.experiment_done(result)
             break
