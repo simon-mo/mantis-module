@@ -1,9 +1,14 @@
 set -ex
 
 cd ..
-make
+./build_docker.sh | tee experiments/templates/container_hash.libsonnet
 cd experiments
 
 ./cleanup.sh
 
-kubectl apply -f master_ctl.yaml
+cd templates
+rm configs/*
+jsonnet experiments.jsonnet -m configs
+cd ..
+
+# kubectl apply -f templates/configs

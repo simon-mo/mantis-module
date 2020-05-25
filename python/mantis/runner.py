@@ -5,6 +5,7 @@ import string
 import time
 import math
 import json
+import shlex
 import os
 from pathlib import Path
 from collections import OrderedDict, Counter
@@ -20,9 +21,11 @@ import pykube
 import yaml
 import boto3
 import papermill as pm
+import pandas as pd
 
 from mantis.models import catalogs
 from mantis.controllers import registry, DONT_SCALE
+from mantis.controllers.base import AbsoluteValueBaseController
 from mantis.util import parse_custom_args, post_result_to_slack
 
 
@@ -54,22 +57,32 @@ class K8sClient:
         for resource in self.should_delete_queue:
             resource.delete()
 
-    def create_redis(self):
+    def create_redis(self, container_sha):
         with open(K8S_DIR / "1_redis.yaml") as f:
             loaded = list(yaml.load_all(f, Loader=yaml.FullLoader))
         deploy, service = loaded
         redis_name = service["metadata"]["name"]
+        deploy["spec"]["template"]["spec"]["containers"][0][
+            "image"
+        ] = f"fissure/redis:{container_sha}"
 
         self.recreate_resource(pykube.Deployment, deploy)
         self.recreate_resource(pykube.Service, service)
 
-        while os.system(f"redis-cli -h redis-service -p 7000 ping") != 0:
+        while (
+            subprocess.Popen(
+                shlex.split(f"redis-cli -h redis-service -p 7000 ping")
+            ).wait()
+            != 0
+        ):
             logger.msg("Waiting for redis to become avaiable")
             time.sleep(2)
 
         return redis_name
 
-    def create_workers(self, redis_name, workload, workload_args, start_replicas):
+    def create_workers(
+        self, redis_name, workload, workload_args, start_replicas, image_sha
+    ):
         with open(K8S_DIR / "2_worker.yaml") as f:
             # workers, frac_worker = list(yaml.load_all(f, Loader=yaml.FullLoader))
             [workers] = list(yaml.load_all(f, Loader=yaml.FullLoader))
@@ -77,9 +90,17 @@ class K8sClient:
             {"name": "MANTIS_REDIS_IP", "value": redis_name},
             {"name": "MANTIS_WORKLOAD", "value": workload},
             {"name": "MANTIS_CUSTOM_ARGS", "value": workload_args},
+            {"name": "OMP_NUM_THREADS", "value": "1"},
+            {
+                "name": "MY_POD_NAME",
+                "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+            },
         ]
         workers["spec"]["template"]["spec"]["containers"][0]["env"] = envvars
         workers["spec"]["replicas"] = start_replicas
+        workers["spec"]["template"]["spec"]["containers"][0][
+            "image"
+        ] = f"fissure/py:{image_sha}"
         # frac_worker["spec"]["containers"][0]["env"] = envvars
         # frac_worker["metadata"]["name"] += "-" + random_letters()
 
@@ -115,7 +136,7 @@ class K8sClient:
         )
         deploy.scale(int(new_integer))
 
-    def create_load_generator(self, redis_name, workload, load_file):
+    def create_load_generator(self, redis_name, workload, load_file, image_sha):
         with open(K8S_DIR / "4_load_gen.yaml") as f:
             [gen] = list(yaml.load_all(f, Loader=yaml.FullLoader))
         env = [
@@ -124,6 +145,9 @@ class K8sClient:
             {"name": "MANTIS_LOAD_FILE", "value": load_file},
         ]
         gen["spec"]["template"]["spec"]["containers"][0]["env"] = env
+        gen["spec"]["template"]["spec"]["containers"][0][
+            "image"
+        ] = f"fissure/py:{image_sha}"
         self.recreate_resource(pykube.Job, gen)
 
 
@@ -181,7 +205,7 @@ class ResultWriter:
                 Key=path[1:],
                 ExtraArgs={"ACL": "public-read"},
             )
-        print("Upload completed!")
+        logger.msg("Upload completed!")
 
     def run_notebook_script(self):
         nb_path = Path(__file__).parent / "plot_mantis.ipynb"
@@ -212,6 +236,16 @@ Result:
         post_result_to_slack(text, images)
 
 
+def get_controller(name, args, start_replicas):
+    ctl_class = registry[name]
+    parsed_ctl_args = parse_custom_args(args)
+    ctl_is_aboslute = issubclass(ctl_class, AbsoluteValueBaseController)
+    if ctl_is_aboslute:
+        parsed_ctl_args.update({"curr_replicas": start_replicas})
+    ctl = ctl_class(**parsed_ctl_args)
+    return ctl, ctl_is_aboslute
+
+
 @click.command()
 @click.option("--load", required=True, type=click.Path(exists=True))
 @click.option("--workload", required=True, type=click.Choice(list(catalogs.keys())))
@@ -222,6 +256,8 @@ Result:
 @click.option("--start-replicas", type=int, default=5)
 @click.option("--controller-time-step", type=float, default=5)
 # @click.option("--fractional-sleep", type=float, required=True)
+@click.option("--redis-image-sha", required=True)
+@click.option("--py-image-sha", required=True)
 def run_controller(
     load,
     workload,
@@ -231,13 +267,16 @@ def run_controller(
     max_replicas,
     start_replicas,
     controller_time_step,
+    redis_image_sha,
+    py_image_sha,
     # fractional_sleep,
 ):
     client = K8sClient()
-    ctl = registry[controller](**parse_custom_args(controller_args))
+
+    ctl, ctl_is_absolute = get_controller(controller, controller_args, start_replicas)
 
     logger.msg("Creating redis")
-    redis_ip = client.create_redis()
+    redis_ip = client.create_redis(redis_image_sha)
 
     r = redis.Redis(redis_ip, port=7000, decode_responses=True)
     # r.set("fractional_sleep", str(fractional_sleep))
@@ -249,11 +288,14 @@ def run_controller(
         workload=workload,
         workload_args=workload_args,
         start_replicas=start_replicas,
+        image_sha=py_image_sha,
     )
 
     logger.msg("Creating load generator")
     num_queries_total, num_queries_received = len(np.load(load)), 0
-    client.create_load_generator(redis_ip, workload=workload, load_file=load)
+    client.create_load_generator(
+        redis_ip, workload=workload, load_file=load, image_sha=py_image_sha
+    )
 
     # Retrieve all parameters
     _local_vars = locals()
@@ -350,6 +392,15 @@ def run_controller(
         # status_report["queue_events"] = events;
         #   event["time_ns"] = curr_time_ns; event["type"] = ADD/DROP; event["queue_id"] = queue_name;
 
+        for key in ["queue_sizes", "dropped_queue_sizes", "dead_queue_sizes"]:
+            queue_sizes = msg[key]
+            if len(queue_sizes) == 0:
+                continue
+            histogram = pd.Series(queue_sizes).value_counts(sort=False).to_dict()
+            logger.msg(
+                f"{key} distribution", **{str(k): v for k, v in histogram.items()}
+            )
+
         curr_int_reps = len(msg["queue_sizes"])
         # fractional_value = msg["fractional_value"]
         curr_reps = curr_int_reps
@@ -360,7 +411,18 @@ def run_controller(
             curr_reps,
             sum(msg["queue_sizes"]),
         )
-        if action != DONT_SCALE:
+        if ctl_is_absolute:
+            target_reps = action
+            target_reps = max(target_reps, 1)
+            target_reps = min(target_reps, max_replicas)
+            msg["ctl_from"] = curr_reps
+            msg["ctl_action"] = action
+            msg["ctl_final_decision"] = target_reps
+            logger.msg(
+                "Descision is aboslute, scaling to", from_=curr_reps, to_=target_reps
+            )
+            scale(target_reps)
+        elif action != DONT_SCALE:
             target_reps = curr_reps + action
             target_reps = max(target_reps, 1)
             target_reps = min(target_reps, max_replicas)
@@ -384,17 +446,16 @@ def run_controller(
         writer.write_summary_dict(msg)
         writer.flush()
 
-        ## TODO: if queries not equal, wait for few cycles
-        finished_percent = "{:.2f}".format(
-            num_queries_received * 100 / num_queries_total
-        )
-        if finished_percent == "100.00":
+        if r.get("load_gen_finished") and np.sum(msg["queue_sizes"]) == 0:
             stop_condition_count_down -= 1
             logger.msg(
-                "Finished percent is 100, waiting for few more rounds",
+                "About to trigger stopping",
                 stop_condition_count_down=stop_condition_count_down,
             )
         elif num_queries_received * 100 / num_queries_total > 99:
+            finished_percent = "{:.2f}".format(
+                num_queries_received * 100 / num_queries_total
+            )
             logger.msg("Finished percent string is: " + finished_percent)
 
         if stop_condition_count_down <= 0:
@@ -411,6 +472,6 @@ def run_controller(
         # Make sure ctl interval is 5s
         compute_duration = time.time() - start
         should_sleep = controller_time_step - compute_duration
-        should_sleep = 0 if should_sleep < 0 else should_sleep
+        should_sleep = max(should_sleep, 0)
         logger.msg(f"Sleeping for {should_sleep:.2f} s")
         time.sleep(should_sleep)

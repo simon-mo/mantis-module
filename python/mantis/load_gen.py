@@ -41,3 +41,4 @@ def load_gen(load, workload, redis_ip, redis_port):
         time.sleep(delta / 1000)
 
     logger.msg("Load generation finished!")
+    r.set("load_gen_finished", "1")

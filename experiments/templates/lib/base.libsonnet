@@ -1,8 +1,10 @@
-{ config(name, cmdline):: 
+local container = import '../container_hash.libsonnet';
+
+{ config(name, cmdline)::
     assert std.length(name) > 0;
     assert std.length(cmdline) > 0;
     assert std.isArray(cmdline);
-    
+
     {
   apiVersion: 'batch/v1',
   kind: 'Job',
@@ -23,11 +25,13 @@
         containers: [
           {
             name: 'controller',
-            imagePullPolicy: 'Always',
-            image: 'fissure/py:latest',
+            image: container.py,
             command: [
               'mantis',
               'run-controller',
+            ] + [
+              "--redis-image-sha", std.split(container.redis,":")[1],
+              "--py-image-sha", std.split(container.py,":")[1],
             ] + cmdline,
             volumeMounts: [
               {

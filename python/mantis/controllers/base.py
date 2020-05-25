@@ -10,3 +10,7 @@ class BaseController:
         queue_length,  # Sum(active replicas queue length)
     ):
         pass
+
+
+class AbsoluteValueBaseController(BaseController):
+    pass

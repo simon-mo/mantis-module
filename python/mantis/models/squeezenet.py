@@ -18,7 +18,7 @@ class Squeezenet:
         with torch.no_grad():
             pred = self.model(torch.tensor(arr))
         pred_bytes = pred.detach().numpy().tobytes()
-        pred_str = base64.b64encode(pred_bytes)
+        pred_str = base64.b64encode(pred_bytes).decode()
         return pred_str
 
     @staticmethod

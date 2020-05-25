@@ -48,8 +48,29 @@ def test_e2e(redis_conn):
     assert "_1_lg_sent" in q2_query
 
     # we completed two queries, see them in completion queue
-    assert r.llen("completion_queue") == 2
+    assert r.llen("completion_queue") >= 2
 
     # lastly, check metric table
     status = json.loads(r.execute_command("mantis.status"))
-    assert "num_active_replica" in status
+    assert "queue_sizes" in status
+
+
+def test_heartbeat(redis_conn):
+    r = redis_conn
+
+    r.execute_command("FLUSHALL")
+
+    r.execute_command("mantis.add_queue", "h-q1")
+    time.sleep(0.5)  # This should makes q1 exceed heartbeat
+
+    r.execute_command("mantis.add_queue", "h-q2")
+    r.execute_command("mantis.enqueue", "aaa", time.time(), 4)
+    assert r.llen("h-q1") == 0
+    assert r.llen("h-q2") == 1
+
+    time.sleep(0.5)  # This should makes q2 exceed heartbeat
+
+    # Now resume the heartbeat for q1
+    r.execute_command("mantis.health", "h-q1")
+    r.execute_command("mantis.enqueue", "aaa", time.time(), 4)
+    assert r.llen("h-q1") == 1

@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: controller-5h
+  name: controller-override-ts-5
 spec:
   backoffLimit: 0
   template:
@@ -13,23 +13,30 @@ spec:
       restartPolicy: Never
       containers:
         - name: controller
-          imagePullPolicy: Always
-          image: fissure/py:latest
+          # imagePullPolicy: Always
+          image: fissure/py:d8f740
           command: [
             "mantis",
             "run-controller",
-            # "--load", "/data/Auckland-10min.npy",
-            "--load", "/data/Waikato-1h-3.npy",
+            "--redis-image-sha", "782e5c",
+            "--py-image-sha", "d8f740",
+            "--load", "/data/one-qps-three-minutes.npy",
+            # "--load", "/data/Waikato-1h-3.npy",
             # "--load", "/data/Waikato-5h.npy",
+            # "--load", "/data/Auckland-10min.npy",
             "--workload", "busy-sleep",
             "--workload-args", "sleep_time_s=0.02",
-            "--start-replicas", "5",
+            # "--workload", "nlp",
+            # "--workload", "vision",
+            "--start-replicas", "1",
             # "--controller", "k8s_native",
             # "--controller-args", "target_cpu=50,max_replicas=72",
             "--controller-time-step", "5",
 
-            "--controller", "pid",
-            "--controller-args", "model_processing_time_s=0.02,target_sigma=0.5" ,
+            "--controller", "scheduled",
+            "--controller-args", "schedule_str=10/-5/0/0/0",
+            # "--controller", "pid",
+            # "--controller-args", "model_processing_time_s=0.046,target_sigma=0.5" ,
 
             # Spin up/down benchmark:
             # "--load", "/data/one-qps-ten-minutes.npy",

@@ -21,6 +21,7 @@ constexpr std::string_view REAL_TIMESTAMPS_NS = "real_timestamp";
 constexpr std::string_view FRACTIONAL_PROB = "fractional_prob";
 constexpr std::string_view COMPLETION_QUEUE = "completion_queue";
 constexpr std::string_view QUEUE_EVENTS = "queue_events";
+constexpr std::string_view HEALTH_CHECK_ZSET = "health-checks";
 
 inline std::vector<std::string> get_array_reply(RedisModuleCallReply *data_array) {
   size_t data_length = RedisModule_CallReplyLength(data_array);
@@ -93,15 +94,62 @@ inline std::vector<std::string> get_removed_queus(RedisModuleCtx *ctx) {
   return still_not_empty_queues;
 }
 
+inline void update_heartbeat(RedisModuleCtx *ctx, std::string queue) {
+  std::string key = "heartbeat/" + queue;
+  RedisModule_Call(ctx, "SET", "cl", key.c_str(), get_current_time_ns());
+}
+
+// mantis.health uuid
+int MantisCommand(HEALTH)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+  if (argc != 2) return RedisModule_WrongArity(ctx);
+  RedisModule_AutoMemory(ctx);
+
+  size_t _;
+  std::string uuid_s = RedisModule_StringPtrLen(argv[1], &_);
+  update_heartbeat(ctx, uuid_s);
+
+  RedisModule_ReplyWithNull(ctx);
+  return REDISMODULE_OK;
+}
+
+long long HEARTBEAT_SLACK_DURATION_MS = 100;
+
+inline bool is_queue_dead(RedisModuleCtx *ctx, std::string queue_name) {
+  std::string namespaced_queue_name = "heartbeat/" + queue_name;
+  RedisModuleCallReply *reply;
+  reply = RedisModule_Call(ctx, "GET", "c", namespaced_queue_name.c_str());
+  int reply_type = RedisModule_CallReplyType(reply);
+  if (reply_type == REDISMODULE_REPLY_NULL) {
+    LOG_FIRST_N(WARNING, 3) << "No heartbeat received for queue=" << queue_name
+                            << " treating it as dead.";
+    return true;  // No heartbeat, assume not available
+  }
+  size_t _;
+  std::string heartbeat_s = RedisModule_CallReplyStringPtr(reply, &_);
+  auto heartbeat_ns = std::stoll(heartbeat_s);
+  auto current_ns = get_current_time_ns();
+  auto time_passed_ns = current_ns - heartbeat_ns;
+
+  if (time_passed_ns > HEARTBEAT_SLACK_DURATION_MS * 1000000) {
+    LOG_FIRST_N(WARNING, 3) << "Missed heartbeat for queue=" << queue_name
+                            << " treating is as dead. time_passed_ms="
+                            << ((double)time_passed_ns / 1e6) << ".";
+    return true;  // Heartbeat slack exceeded.
+  }
+
+  return false;
+}
+
 // mantis.enqueue payload lg_sent_time unique_id
 int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
   if (argc != 4) return RedisModule_WrongArity(ctx);
   RedisModule_AutoMemory(ctx);
 
-  LOG_EVERY_N(INFO, 100) << "Handling enqueue # " << google::COUNTER;
-
   // BEGIN: choose a queue
-  std::vector<std::string> queues = get_active_queues(ctx);
+  std::vector<std::string> active_queues = get_active_queues(ctx);
+  std::vector<std::string> queues;
+  std::copy_if(active_queues.begin(), active_queues.end(), std::back_inserter(queues),
+               [ctx](std::string &value) { return !is_queue_dead(ctx, value); });
 
   std::string chosen_queue_name;
   CHECK(queues.size() > 0) << "No queue available";
@@ -111,11 +159,11 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
     std::vector<std::string> two_chosen_queues;
     std::sample(queues.begin(), queues.end(), std::back_inserter(two_chosen_queues), 2,
                 std::mt19937{std::random_device{}()});
-
-    long long first_queue_len = get_queue_length(ctx, two_chosen_queues[0]);
-    long long second_queue_len = get_queue_length(ctx, two_chosen_queues[1]);
-    chosen_queue_name =
-        first_queue_len < second_queue_len ? two_chosen_queues[0] : two_chosen_queues[1];
+    std::sort(two_chosen_queues.begin(), two_chosen_queues.end(),
+              [ctx](std::string &a, std::string &b) {
+                return get_queue_length(ctx, a) < get_queue_length(ctx, b);
+              });
+    chosen_queue_name = two_chosen_queues[0];
   }
   // END: choose a queue
 
@@ -141,6 +189,7 @@ int MantisCommand(ENQUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
   nlohmann::json query;
   query["payload"] = payload;
   query["query_id"] = unique_id_int;
+  query["worker_id"] = chosen_queue_name;
   query["_1_lg_sent"] = sent_time;
   query["_2_enqueue_time"] = current_time_s;
   std::string serialized_query = query.dump();
@@ -173,7 +222,6 @@ int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 
   size_t queue_name_len;
   std::string queue_name_s = RedisModule_StringPtrLen(argv[1], &queue_name_len);
-  LOG(INFO) << "Handling add_queue " << queue_name_s;
 
   // Note that queue name will be client generated.
   // We assume the client has already called "subscribe" to that queue.
@@ -182,6 +230,7 @@ int MantisCommand(ADD_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int 
   RedisModule_Call(ctx, "SADD", "cs", ACTIVE_QUEUES.data(), queue_name);
   RedisModule_Call(ctx, "RPUSH", "cc", QUEUE_EVENTS.data(),
                    make_event_string("ADD", queue_name_s).c_str());
+  update_heartbeat(ctx, queue_name_s);
 
   RedisModule_ReplyWithNull(ctx);
   return REDISMODULE_OK;
@@ -194,13 +243,13 @@ int MantisCommand(DROP_QUEUE)(RedisModuleCtx *ctx, RedisModuleString **argv, int
 
   size_t queue_name_len;
   std::string queue_name_s = RedisModule_StringPtrLen(argv[1], &queue_name_len);
-  LOG(INFO) << "Handling drop_queue " << queue_name_s;
 
   RedisModuleString *queue_name = argv[1];
   RedisModule_Call(ctx, "SADD", "cs", REMOVED_QUEUES.data(), queue_name);
   RedisModule_Call(ctx, "SREM", "cs", ACTIVE_QUEUES.data(), queue_name);
   RedisModule_Call(ctx, "RPUSH", "cc", QUEUE_EVENTS.data(),
                    make_event_string("DROP", queue_name_s).c_str());
+  RedisModule_Call(ctx, "DEL", "c", ("heartbeat/" + queue_name_s).c_str());
 
   RedisModule_ReplyWithNull(ctx);
   return REDISMODULE_OK;
@@ -253,11 +302,26 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
 
   // Get queue sizes
   // The total queue sizes are active + dropped queue sizes.
-  std::vector<long long> queue_sizes;
   std::vector<std::string> queues = get_active_queues(ctx);
-  for (auto &queue_name : queues) {
-    queue_sizes.push_back(get_queue_length(ctx, queue_name));
-  }
+  // for (auto &queue_name : queues) {
+  //   queue_sizes.push_back(get_queue_length(ctx, queue_name));
+  // }
+
+  std::vector<std::string> healthy_queues;
+  std::copy_if(queues.begin(), queues.end(), std::back_inserter(healthy_queues),
+               [ctx](std::string &value) { return !is_queue_dead(ctx, value); });
+  std::vector<std::string> dead_queues;
+  std::copy_if(queues.begin(), queues.end(), std::back_inserter(dead_queues),
+               [ctx](std::string &value) { return is_queue_dead(ctx, value); });
+
+  std::vector<long long> queue_sizes;
+  std::transform(healthy_queues.begin(), healthy_queues.end(),
+                 std::back_inserter(queue_sizes),
+                 [ctx](std::string &value) { return get_queue_length(ctx, value); });
+  std::vector<long long> dead_queue_sizes;
+  std::transform(dead_queues.begin(), dead_queues.end(),
+                 std::back_inserter(dead_queue_sizes),
+                 [ctx](std::string &value) { return get_queue_length(ctx, value); });
 
   std::vector<long long> dropped_queue_sizes;
   std::vector<std::string> dropped_queues = get_removed_queus(ctx);
@@ -289,6 +353,7 @@ int MantisCommand(STATUS)(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
 
   // Active queue sizes ActiveList[int]
   status_report["queue_sizes"] = queue_sizes;
+  status_report["dead_queue_sizes"] = dead_queue_sizes;
 
   // Dropped queue sizes DropList[int] (Scaling down)
   status_report["dropped_queue_sizes"] = dropped_queue_sizes;
@@ -329,6 +394,8 @@ int MantisCommand(COMPLETE)(RedisModuleCtx *ctx, RedisModuleString **argv, int a
   std::string payload = RedisModule_StringPtrLen(payload_str, &payload_len);
 
   auto query = nlohmann::json::parse(payload);
+  auto queue_name = query["worker_id"];
+  update_heartbeat(ctx, queue_name);
 
   auto current_time_ns = get_current_time_ns();
   auto current_time_s = static_cast<double>(current_time_ns) / 1.0e9;
@@ -358,6 +425,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
   }
 
   if (RedisModule_Init(ctx, "mantis", 1, REDISMODULE_APIVER_1) == REDISMODULE_ERR)
+    return REDISMODULE_ERR;
+
+  if (RedisModule_CreateCommand(ctx, "mantis.health", MantisCommand(HEALTH), "write", 0,
+                                0, 0) == REDISMODULE_ERR)
     return REDISMODULE_ERR;
 
   if (RedisModule_CreateCommand(ctx, "mantis.enqueue", MantisCommand(ENQUEUE), "write", 0,

@@ -12,13 +12,10 @@ spec:
       labels:
         app: worker
     spec:
+      serviceAccountName: controller-role
       terminationGracePeriodSeconds: 3600 # An hour
       containers:
         - name: worker
-          lifecycle:
-            preStop:
-              exec:
-                command: ["kill", "-s", "HUP", "1"]
           image: fissure/py:latest
           imagePullPolicy: Always
           # ENV to be filled.
